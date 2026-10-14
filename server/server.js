@@ -260,8 +260,11 @@ app.post('/api/admin/trips', requireAdmin, wrap(async (req, res) => {
   if (!route) throw new Error('Choose a valid route');
   const busName = String(req.body.busName || '').trim();
   if (!busName) throw new Error('Bus name is required');
-  const startAt = Number(req.body.startAt);
-  const endAt = Number(req.body.endAt);
+  // "Start now" sends instantMin and the server stamps the start, so a wrong clock on the admin's PC can't misplace the bus.
+  const instantMin = Number(req.body.instantMin);
+  if (req.body.instantMin !== undefined && !(instantMin >= 1 && instantMin <= 1440)) throw new Error('Test length must be between 1 and 1440 minutes');
+  const startAt = instantMin ? Date.now() : Number(req.body.startAt);
+  const endAt = instantMin ? startAt + instantMin * 60000 : Number(req.body.endAt);
   if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) throw new Error('Start and end date/time are required');
   if (startAt < Date.now() - 86400000 || startAt > Date.now() + 365 * 86400000) throw new Error('Invalid start time');
   if (endAt <= startAt) throw new Error('End time must be after the start time');

@@ -510,7 +510,7 @@ async function tripAction(act, id) {
 async function submitTrip(startAt, endAt, { instant = false, win = null } = {}) {
   try {
     const t = await api('POST', '/api/admin/trips', {
-      routeId: $('tRoute').value, busName: $('tBus').value.trim() || (instant ? 'Test bus' : ''), plate: $('tPlate').value, startAt, endAt,
+      routeId: $('tRoute').value, busName: $('tBus').value.trim() || (instant ? 'Test bus' : ''), plate: $('tPlate').value, ...(instant ? { instantMin: (endAt - startAt) / 60000 } : { startAt, endAt }),
     });
     say('tripMsg', instant ? 'Test trip started.' + (win ? '' : ' (Pop-up blocked — use Open ↗ below.)') : 'Trip created.', 'ok');
     $('newLink').innerHTML = `<div class="muted">Share this link — it opens the live map:</div>
