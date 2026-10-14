@@ -11,6 +11,11 @@ const TOKEN_TTL = 12 * 3600 * 1000;
 const compression = require('compression');
 const app = express();
 app.use(compression({ filter: (req, res) => req.path !== '/api/live' && compression.filter(req, res) })); // gzip everything except the live event stream
+app.use((req, res, next) => { // the frontend may be hosted elsewhere (Vercel); auth uses a bearer header, not cookies, so * is safe
+  res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS' });
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 

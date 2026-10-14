@@ -26,6 +26,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/js/config.js"></script>
 <script src="/js/common.js"></script>
 <script src="/js/busicon.js"></script>
 <script>
@@ -39,7 +40,7 @@ const markers = new Map(); // busId -> marker
 let followed = true;
 
 async function init() {
-  routes = await (await fetch('/api/routes')).json();
+  routes = await (await fetch(API_BASE + '/api/routes')).json();
   const sel = $('routeSel');
   if (!routes.length) {
     sel.innerHTML = '<option>No routes yet</option>';
@@ -76,7 +77,7 @@ function chooseRoute(id) {
 }
 
 function connect() {
-  const es = new EventSource('/api/live');
+  const es = new EventSource(API_BASE + '/api/live');
   es.onmessage = e => { buses = JSON.parse(e.data); render(); };
   // EventSource reconnects automatically on error.
 }

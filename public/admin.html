@@ -117,6 +117,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/js/config.js"></script>
 <script src="/js/common.js"></script>
 <script>
 let token = sessionStorage.getItem('token');
@@ -127,7 +128,7 @@ let stopMarkers = [], previewLine = null, viewLayers = [];
 let editingBus = null;
 
 async function api(method, url, body) {
-  const r = await fetch(url, {
+  const r = await fetch(API_BASE + url, {
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
     body: body ? JSON.stringify(body) : undefined,
