@@ -34,6 +34,7 @@
   <h2 id="loginTitle">Log in</h2>
   <label for="u">Username</label><input id="u" autocomplete="username">
   <label for="p">Password</label><input id="p" type="password" autocomplete="current-password">
+  <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer"><input id="showPw" type="checkbox" style="width:auto"> Show password</label>
   <button id="loginBtn" style="width:100%;margin-top:14px">Log in</button>
   <p style="text-align:center;margin:12px 0 0;font-size:14px"><a href="#" id="toggleMode">New here? Create an account</a></p>
   <div id="loginMsg" class="msg err"></div>
@@ -144,6 +145,7 @@ const say = (id, text, kind = '') => { const el = $(id); el.textContent = text |
 // ---------- auth ----------
 $('loginBtn').onclick = login;
 $('p').addEventListener('keydown', e => e.key === 'Enter' && login());
+$('showPw').onchange = e => { $('p').type = e.target.checked ? 'text' : 'password'; };
 let signupMode = false;
 $('toggleMode').onclick = e => {
   e.preventDefault();
