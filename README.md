@@ -7,6 +7,12 @@
     npm install
     npm start
 
-Anyone can create an account on /admin.html; each account manages only its own routes, buses and trips. The session-signing secret is generated and saved in `data/auth.json` (gitignored). Data lives in `data/db.json`.
+Anyone can create an account on `/admin.html`; each account manages only its own routes, buses and trips.
+
+## Storage
+- **Production:** set `DATABASE_URL` to a Postgres connection string (e.g. a free Neon database). Tables are created automatically.
+- **Local dev:** with no `DATABASE_URL`, data is kept in `data/db.json` and `data/auth.json` (gitignored).
+
+Optional: `TOKEN_SECRET` (otherwise a secret is generated and stored with the accounts), `PUBLIC_URL`.
 
 The old single-file prototype is in `legacy/prototype.html`.

@@ -1,11 +1,11 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
-const { db, save, id, auth, saveAuth } = require('./store');
+const { db, save, id, auth, saveAuth, init } = require('./store');
 const { buildGeometry, cumulative, busState, buildSchedule } = require('./geo');
 
 const PORT = process.env.PORT || 3000;
-const SECRET = process.env.TOKEN_SECRET || auth.secret; // generated once and saved in data/auth.json
+const secret = () => process.env.TOKEN_SECRET || auth.secret; // auth.secret is generated once and stored with the accounts
 const TOKEN_TTL = 12 * 3600 * 1000;
 
 const compression = require('compression');
@@ -15,7 +15,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ---------- auth ----------
-const sign = payload => crypto.createHmac('sha256', SECRET).update(payload).digest('hex');
+const sign = payload => crypto.createHmac('sha256', secret()).update(payload).digest('hex');
 const safeEq = (a, b) => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && crypto.timingSafeEqual(x, y);
@@ -322,7 +322,9 @@ setInterval(() => {
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
-app.listen(PORT, () => {
-  console.log(`Bus tracker:   http://localhost:${PORT}`);
-  console.log(`Admin:         http://localhost:${PORT}/admin.html`);
-});
+init().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Bus tracker:   http://localhost:${PORT}`);
+    console.log(`Admin:         http://localhost:${PORT}/admin.html`);
+  });
+}).catch(e => { console.error('Failed to start:', e.message); process.exit(1); });
