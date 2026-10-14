@@ -91,26 +91,46 @@ function pointAt(route, frac) {
   return { lat: a[0] + (b[0] - a[0]) * t, lng: a[1] + (b[1] - a[1]) * t, bearing: bearing(a, b) };
 }
 
-// "HH:MM" today (server local time) -> epoch ms
-function todayAt(hhmm, now) {
+// Departure times are wall-clock times in the bus's own timezone (the server runs in UTC).
+const validTz = tz => { if (typeof tz !== 'string' || !tz) return false; try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; } };
+const DEFAULT_TZ = validTz(process.env.DEFAULT_TIMEZONE) ? process.env.DEFAULT_TIMEZONE : 'UTC';
+const fmtCache = new Map();
+function tzOffsetMs(ts, tz) { // how far wall-clock time in tz is ahead of UTC at instant ts
+  let f = fmtCache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    fmtCache.set(tz, f);
+  }
+  const o = {};
+  for (const p of f.formatToParts(new Date(ts))) o[p.type] = p.value;
+  return Date.UTC(o.year, o.month - 1, o.day, o.hour, o.minute, o.second) - Math.floor(ts / 1000) * 1000;
+}
+
+// "HH:MM" on the current calendar day in timezone tz -> epoch ms
+function todayAt(hhmm, now, tz = DEFAULT_TZ) {
   const [h, m] = hhmm.split(':').map(Number);
-  const d = new Date(now);
-  d.setHours(h, m, 0, 0);
-  return d.getTime();
+  const off = tzOffsetMs(now, tz);
+  const local = new Date(now + off);
+  const guess = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), h, m);
+  let ts = guess - off;
+  const off2 = tzOffsetMs(ts, tz); // offset can differ across a DST change
+  if (off2 !== off) ts = guess - off2;
+  return ts;
 }
 
 // Work out where a bus is right now.
 function busState(bus, route, now = Date.now()) {
   const dur = route.durationMin * 60000;
   const departures = (bus.departures || []).slice().sort();
+  const tz = validTz(bus.timezone) ? bus.timezone : DEFAULT_TZ;
   let start = null;
 
   if (bus.tripStart && now >= bus.tripStart && now - bus.tripStart <= dur) {
     start = bus.tripStart; // manual "start now" trip
   } else {
-    for (const t of departures) {
-      const s = todayAt(t, now);
-      if (s <= now && now - s <= dur) start = s;
+    for (const t of departures) { // yesterday's departure too: an overnight trip is still running after midnight
+      const today = todayAt(t, now, tz);
+      for (const s of [today - 86400000, today]) if (s <= now && now - s <= dur && (start === null || s > start)) start = s;
     }
   }
 
@@ -134,8 +154,8 @@ function busState(bus, route, now = Date.now()) {
   }
 
   // not running: find next departure
-  let next = departures.map(t => todayAt(t, now)).find(s => s > now);
-  if (!next && departures.length) next = todayAt(departures[0], now) + 86400000;
+  let next = departures.map(t => todayAt(t, now, tz)).find(s => s > now);
+  if (!next && departures.length) next = todayAt(departures[0], now, tz) + 86400000;
   if (bus.tripStart && bus.tripStart > now) next = Math.min(next ?? Infinity, bus.tripStart);
   const first = route.path[0];
   return { ...base, status: 'scheduled', progress: 0, lat: first[0], lng: first[1], bearing: 0, nextDeparture: next || null };
@@ -281,4 +301,4 @@ function buildSchedule(route, startAt, endAt) {
   return { timeline: thin(timeline, total), stops, haltMin: haltTotal / 60000, avgKmh };
 }
 
-module.exports = { buildGeometry, cumulative, busState, pointAt, buildSchedule };
+module.exports = { buildGeometry, cumulative, busState, pointAt, buildSchedule, todayAt, validTz };

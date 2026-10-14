@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const { promisify } = require('util');
 const { db, save, id, auth, saveAuth, init, flush } = require('./store');
-const { buildGeometry, cumulative, busState, buildSchedule } = require('./geo');
+const { buildGeometry, cumulative, busState, buildSchedule, validTz } = require('./geo');
 
 const PORT = process.env.PORT || 3000;
 const secret = () => process.env.TOKEN_SECRET || auth.secret; // auth.secret is generated once and stored with the accounts
@@ -204,6 +204,7 @@ function writeBus(bus, body, req) {
   Object.assign(bus, {
     name: name.slice(0, 60), plate: String(body.plate || '').trim().slice(0, 20), routeId: body.routeId,
     departures: cleanDepartures(body.departures), active: body.active !== false,
+    timezone: validTz(body.timezone) ? body.timezone : (bus.timezone || 'UTC'), // departure times are in the admin's timezone
   });
   return bus;
 }
@@ -369,6 +370,14 @@ app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: 'Server error' });
 });
+
+// Old finished trips (mostly test runs) would otherwise pile up against each account's trip limit.
+const TRIP_KEEP_MS = 30 * 86400000;
+setInterval(() => {
+  const n = db.trips.length;
+  db.trips = db.trips.filter(t => endOf(t) > Date.now() - TRIP_KEEP_MS);
+  if (db.trips.length !== n) save();
+}, 3600000).unref();
 
 process.on('unhandledRejection', e => console.error('Unhandled rejection:', e));
 process.on('uncaughtException', e => console.error('Uncaught exception:', e));

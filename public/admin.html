@@ -592,6 +592,7 @@ $('saveBus').onclick = async () => {
   const body = {
     name: $('bName').value, plate: $('bPlate').value, routeId: $('bRoute').value,
     departures: $('bDeps').value.split(',').map(s => s.trim()).filter(Boolean),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
   try {
     if (editingBus) await api('PUT', '/api/admin/buses/' + editingBus, body);
