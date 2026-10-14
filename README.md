@@ -10,9 +10,14 @@
 Anyone can create an account on `/admin.html`; each account manages only its own routes, buses and trips.
 
 ## Storage
-- **Production:** set `DATABASE_URL` to a Postgres connection string (e.g. a free Neon database). Tables are created automatically.
+- **Production:** set `DATABASE_URL` to a Postgres connection string (e.g. Supabase session pooler). Tables (`users`, `routes`, `buses`, `trips`, `meta`) are created automatically, and data from the earlier single-table version is migrated on first start.
 - **Local dev:** with no `DATABASE_URL`, data is kept in `data/db.json` and `data/auth.json` (gitignored).
 
-Optional: `TOKEN_SECRET` (otherwise a secret is generated and stored with the accounts), `PUBLIC_URL`.
+Run a **single server instance**: the in-memory copy is the source of truth, and writes go to Postgres row by row.
+
+## Optional env vars
+`TOKEN_SECRET` (otherwise generated and stored in the database), `PUBLIC_URL` (base for share links), `MAX_ROUTES` / `MAX_BUSES` / `MAX_TRIPS` (per-account limits, default 20 / 50 / 200).
+
+Health check for the host: `GET /healthz`.
 
 The old single-file prototype is in `legacy/prototype.html`.
