@@ -5,8 +5,8 @@
 
 ## Run
     npm install
-    ADMIN_PASSWORD=yourpassword npm start      # PowerShell: $env:ADMIN_PASSWORD="yourpassword"; npm start
+    npm start
 
-Defaults: user `admin`, password `admin123` (change it!). Set `TOKEN_SECRET` to keep admin sessions across restarts. Data lives in `data/db.json`.
+Anyone can create an account on /admin.html; each account manages only its own routes, buses and trips. The session-signing secret is generated and saved in `data/auth.json` (gitignored). Data lives in `data/db.json`.
 
 The old single-file prototype is in `legacy/prototype.html`.

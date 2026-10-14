@@ -31,10 +31,11 @@
 </header>
 
 <div id="login">
-  <h2>Admin login</h2>
-  <label for="u">Username</label><input id="u" autocomplete="username" value="admin">
+  <h2 id="loginTitle">Log in</h2>
+  <label for="u">Username</label><input id="u" autocomplete="username">
   <label for="p">Password</label><input id="p" type="password" autocomplete="current-password">
   <button id="loginBtn" style="width:100%;margin-top:14px">Log in</button>
+  <p style="text-align:center;margin:12px 0 0;font-size:14px"><a href="#" id="toggleMode">New here? Create an account</a></p>
   <div id="loginMsg" class="msg err"></div>
 </div>
 
@@ -142,9 +143,19 @@ const say = (id, text, kind = '') => { const el = $(id); el.textContent = text |
 // ---------- auth ----------
 $('loginBtn').onclick = login;
 $('p').addEventListener('keydown', e => e.key === 'Enter' && login());
+let signupMode = false;
+$('toggleMode').onclick = e => {
+  e.preventDefault();
+  signupMode = !signupMode;
+  $('loginTitle').textContent = signupMode ? 'Create account' : 'Log in';
+  $('loginBtn').textContent = signupMode ? 'Sign up' : 'Log in';
+  $('toggleMode').textContent = signupMode ? 'Have an account? Log in' : 'New here? Create an account';
+  $('p').autocomplete = signupMode ? 'new-password' : 'current-password';
+  say('loginMsg', '');
+};
 async function login() {
   try {
-    const j = await api('POST', '/api/admin/login', { username: $('u').value, password: $('p').value });
+    const j = await api('POST', signupMode ? '/api/auth/register' : '/api/auth/login', { username: $('u').value, password: $('p').value });
     token = j.token;
     sessionStorage.setItem('token', token);
     $('p').value = '';

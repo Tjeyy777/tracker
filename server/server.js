@@ -1,16 +1,12 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
-const { db, save, id } = require('./store');
+const { db, save, id, auth, saveAuth } = require('./store');
 const { buildGeometry, cumulative, busState, buildSchedule } = require('./geo');
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const SECRET = process.env.TOKEN_SECRET || crypto.randomBytes(32).toString('hex'); // tokens reset on restart unless set
+const SECRET = process.env.TOKEN_SECRET || auth.secret; // generated once and saved in data/auth.json
 const TOKEN_TTL = 12 * 3600 * 1000;
-
-if (!process.env.ADMIN_PASSWORD) console.warn('! Using default admin password "admin123". Set ADMIN_PASSWORD before deploying.');
 
 const compression = require('compression');
 const app = express();
@@ -26,28 +22,66 @@ const safeEq = (a, b) => {
 };
 
 function requireAdmin(req, res, next) {
-  const [exp, sig] = (req.headers.authorization || '').replace(/^Bearer /, '').split('.');
-  if (!exp || !sig || !safeEq(sign(exp), sig) || Date.now() > Number(exp)) {
+  const [uid, exp, sig] = (req.headers.authorization || '').replace(/^Bearer /, '').split('.');
+  const user = auth.users.find(u => u.id === uid);
+  if (!user || !exp || !sig || !safeEq(sign(`${uid}.${exp}`), sig) || Date.now() > Number(exp)) {
     return res.status(401).json({ error: 'Not authorised' });
   }
+  req.user = user;
   next();
 }
 
-const attempts = new Map(); // ip -> {n, until}
-app.post('/api/admin/login', (req, res) => {
-  const ip = req.ip;
-  const a = attempts.get(ip);
-  if (a && a.n >= 5 && Date.now() < a.until) return res.status(429).json({ error: 'Too many attempts, try again in a minute' });
+const issueToken = user => {
+  const exp = String(Date.now() + TOKEN_TTL);
+  return `${user.id}.${exp}.${sign(`${user.id}.${exp}`)}`;
+};
+const hashPassword = (password, salt) => crypto.scryptSync(password, salt, 64).toString('hex');
 
-  const { username = '', password = '' } = req.body || {};
-  if (safeEq(String(username), ADMIN_USER) && safeEq(String(password), ADMIN_PASSWORD)) {
-    attempts.delete(ip);
-    const exp = String(Date.now() + TOKEN_TTL);
-    return res.json({ token: `${exp}.${sign(exp)}` });
+const attempts = new Map(); // ip -> {n, until}
+function throttle(req, res) {
+  const a = attempts.get(req.ip);
+  if (a && a.n >= 8 && Date.now() < a.until) { res.status(429).json({ error: 'Too many attempts, try again in a minute' }); return false; }
+  return true;
+}
+const fail = req => {
+  const a = attempts.get(req.ip);
+  attempts.set(req.ip, { n: (a && Date.now() < a.until ? a.n : 0) + 1, until: Date.now() + 60000 });
+};
+
+app.post('/api/auth/register', (req, res) => {
+  if (!throttle(req, res)) return;
+  fail(req); // counts toward the limit so signups can't be spammed
+  const username = String((req.body || {}).username || '').trim();
+  const password = String((req.body || {}).password || '');
+  if (!/^[A-Za-z0-9_.-]{3,30}$/.test(username)) return res.status(400).json({ error: 'Username must be 3-30 letters, numbers, . _ -' });
+  if (password.length < 6 || password.length > 200) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  if (auth.users.some(u => u.username.toLowerCase() === username.toLowerCase())) return res.status(409).json({ error: 'That username is taken' });
+  const salt = crypto.randomBytes(16).toString('hex');
+  const user = { id: id(), username, salt, hash: hashPassword(password, salt), createdAt: Date.now() };
+  const first = auth.users.length === 0;
+  auth.users.push(user);
+  saveAuth();
+  if (first) { // data created before accounts existed goes to the first account
+    for (const list of [db.routes, db.buses, db.trips]) for (const x of list) if (!x.ownerId) x.ownerId = user.id;
+    save();
   }
-  attempts.set(ip, { n: (a && Date.now() < a.until ? a.n : 0) + 1, until: Date.now() + 60000 });
+  res.status(201).json({ token: issueToken(user), username });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!throttle(req, res)) return;
+  const { username = '', password = '' } = req.body || {};
+  const user = auth.users.find(u => u.username.toLowerCase() === String(username).trim().toLowerCase());
+  if (user && safeEq(hashPassword(String(password), user.salt), user.hash)) {
+    attempts.delete(req.ip);
+    return res.json({ token: issueToken(user), username: user.username });
+  }
+  fail(req);
   res.status(401).json({ error: 'Wrong username or password' });
 });
+
+const mine = (list, req) => list.filter(x => x.ownerId === req.user.id);
+const findMine = (list, req, idv) => list.find(x => x.id === idv && x.ownerId === req.user.id);
 
 // ---------- helpers ----------
 const num = v => typeof v === 'number' && Number.isFinite(v);
@@ -100,17 +134,17 @@ async function writeRoute(route, body) {
   return route;
 }
 
-app.get('/api/admin/routes', requireAdmin, (req, res) => res.json(db.routes.map(publicRoute)));
+app.get('/api/admin/routes', requireAdmin, (req, res) => res.json(mine(db.routes, req).map(publicRoute)));
 
 app.post('/api/admin/routes', requireAdmin, wrap(async (req, res) => {
-  const route = await writeRoute({ id: id() }, req.body);
+  const route = await writeRoute({ id: id(), ownerId: req.user.id }, req.body);
   db.routes.push(route);
   save();
   res.status(201).json(publicRoute(route));
 }));
 
 app.put('/api/admin/routes/:id', requireAdmin, wrap(async (req, res) => {
-  const route = db.routes.find(r => r.id === req.params.id);
+  const route = findMine(db.routes, req, req.params.id);
   if (!route) return res.status(404).json({ error: 'Route not found' });
   await writeRoute(route, req.body);
   save();
@@ -118,21 +152,20 @@ app.put('/api/admin/routes/:id', requireAdmin, wrap(async (req, res) => {
 }));
 
 app.delete('/api/admin/routes/:id', requireAdmin, (req, res) => {
+  if (!findMine(db.routes, req, req.params.id)) return res.status(404).json({ error: 'Route not found' });
   if (db.buses.some(b => b.routeId === req.params.id)) return res.status(409).json({ error: 'Remove the buses on this route first' });
   if (db.trips.some(t => t.routeId === req.params.id)) return res.status(409).json({ error: 'Delete the trips on this route first' });
-  const n = db.routes.length;
   db.routes = db.routes.filter(r => r.id !== req.params.id);
-  if (db.routes.length === n) return res.status(404).json({ error: 'Route not found' });
   save();
   res.json({ ok: true });
 });
 
-app.get('/api/admin/buses', requireAdmin, (req, res) => res.json(db.buses));
+app.get('/api/admin/buses', requireAdmin, (req, res) => res.json(mine(db.buses, req)));
 
-function writeBus(bus, body) {
+function writeBus(bus, body, req) {
   const name = String(body.name || '').trim();
   if (!name) throw new Error('Bus name is required');
-  if (!db.routes.some(r => r.id === body.routeId)) throw new Error('Choose a valid route');
+  if (!findMine(db.routes, req, body.routeId)) throw new Error('Choose a valid route');
   Object.assign(bus, {
     name: name.slice(0, 60), plate: String(body.plate || '').trim().slice(0, 20), routeId: body.routeId,
     departures: cleanDepartures(body.departures), active: body.active !== false,
@@ -141,22 +174,22 @@ function writeBus(bus, body) {
 }
 
 app.post('/api/admin/buses', requireAdmin, wrap(async (req, res) => {
-  const bus = writeBus({ id: id() }, req.body);
+  const bus = writeBus({ id: id(), ownerId: req.user.id }, req.body, req);
   db.buses.push(bus);
   save();
   res.status(201).json(bus);
 }));
 
 app.put('/api/admin/buses/:id', requireAdmin, wrap(async (req, res) => {
-  const bus = db.buses.find(b => b.id === req.params.id);
+  const bus = findMine(db.buses, req, req.params.id);
   if (!bus) return res.status(404).json({ error: 'Bus not found' });
-  writeBus(bus, req.body);
+  writeBus(bus, req.body, req);
   save();
   res.json(bus);
 }));
 
 app.post('/api/admin/buses/:id/start-now', requireAdmin, (req, res) => {
-  const bus = db.buses.find(b => b.id === req.params.id);
+  const bus = findMine(db.buses, req, req.params.id);
   if (!bus) return res.status(404).json({ error: 'Bus not found' });
   bus.tripStart = Date.now();
   save();
@@ -164,7 +197,7 @@ app.post('/api/admin/buses/:id/start-now', requireAdmin, (req, res) => {
 });
 
 app.post('/api/admin/buses/:id/stop', requireAdmin, (req, res) => {
-  const bus = db.buses.find(b => b.id === req.params.id);
+  const bus = findMine(db.buses, req, req.params.id);
   if (!bus) return res.status(404).json({ error: 'Bus not found' });
   delete bus.tripStart;
   save();
@@ -172,9 +205,8 @@ app.post('/api/admin/buses/:id/stop', requireAdmin, (req, res) => {
 });
 
 app.delete('/api/admin/buses/:id', requireAdmin, (req, res) => {
-  const n = db.buses.length;
+  if (!findMine(db.buses, req, req.params.id)) return res.status(404).json({ error: 'Bus not found' });
   db.buses = db.buses.filter(b => b.id !== req.params.id);
-  if (db.buses.length === n) return res.status(404).json({ error: 'Bus not found' });
   save();
   res.json({ ok: true });
 });
@@ -184,10 +216,10 @@ const baseUrl = req => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('
 const endOf = t => t.endAt ?? t.startAt + t.durationMin * 60000;
 const tripView = (t, req) => ({ ...t, endAt: endOf(t), url: `${baseUrl(req)}/t/${t.id}` });
 
-app.get('/api/admin/trips', requireAdmin, (req, res) => res.json(db.trips.map(t => tripView(t, req))));
+app.get('/api/admin/trips', requireAdmin, (req, res) => res.json(mine(db.trips, req).map(t => tripView(t, req))));
 
 app.post('/api/admin/trips', requireAdmin, wrap(async (req, res) => {
-  const route = db.routes.find(r => r.id === req.body.routeId);
+  const route = findMine(db.routes, req, req.body.routeId);
   if (!route) throw new Error('Choose a valid route');
   const busName = String(req.body.busName || '').trim();
   if (!busName) throw new Error('Bus name is required');
@@ -197,7 +229,7 @@ app.post('/api/admin/trips', requireAdmin, wrap(async (req, res) => {
   if (startAt < Date.now() - 86400000 || startAt > Date.now() + 365 * 86400000) throw new Error('Invalid start time');
   if (endAt <= startAt) throw new Error('End time must be after the start time');
   if (endAt - startAt > 7 * 86400000) throw new Error('A trip can be at most 7 days long');
-  const trip = { id: crypto.randomBytes(6).toString('hex'), routeId: route.id, busName: busName.slice(0, 60), plate: String(req.body.plate || '').trim().slice(0, 20), startAt, endAt, createdAt: Date.now() };
+  const trip = { id: crypto.randomBytes(6).toString('hex'), ownerId: req.user.id, routeId: route.id, busName: busName.slice(0, 60), plate: String(req.body.plate || '').trim().slice(0, 20), startAt, endAt, createdAt: Date.now() };
   buildSchedule(route, startAt, endAt); // throws a friendly error if the halts don't fit in the trip time
   db.trips.push(trip);
   save();
@@ -205,9 +237,8 @@ app.post('/api/admin/trips', requireAdmin, wrap(async (req, res) => {
 }));
 
 app.delete('/api/admin/trips/:id', requireAdmin, (req, res) => {
-  const n = db.trips.length;
+  if (!findMine(db.trips, req, req.params.id)) return res.status(404).json({ error: 'Trip not found' });
   db.trips = db.trips.filter(t => t.id !== req.params.id);
-  if (db.trips.length === n) return res.status(404).json({ error: 'Trip not found' });
   save();
   res.json({ ok: true });
 });
