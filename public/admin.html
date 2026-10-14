@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Bus Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  #login { max-width: 320px; margin: 80px auto; background: #fff; padding: 24px; border-radius: 12px; border: 1px solid var(--line); }
+  #login h2 { margin-top: 0; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button { background: #e3e8f0; color: var(--ink); flex: 1; }
+  .tabs button.active { background: var(--brand); color: #fff; }
+  .stop { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .stop input.halt { width: 58px; flex: none; padding-left: 6px; padding-right: 4px; }
+  .stop span.n { width: 22px; text-align: center; font-weight: 700; color: var(--muted); }
+  .stop button { padding: 4px 8px; }
+  .hidden { display: none !important; }
+  button.secondary.active { background: var(--brand); color: #fff; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  #mapHint { position: absolute; z-index: 500; top: 10px; left: 50px; background: #fffd; padding: 6px 10px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+  .mapwrap { position: relative; flex: 1; display: flex; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛠 Bus Tracker Admin</h1>
+  <a href="/" target="_blank">View rider site ↗</a>
+  <button id="logout" class="secondary hidden">Log out</button>
+</header>
+
+<div id="login">
+  <h2>Admin login</h2>
+  <label for="u">Username</label><input id="u" autocomplete="username" value="admin">
+  <label for="p">Password</label><input id="p" type="password" autocomplete="current-password">
+  <button id="loginBtn" style="width:100%;margin-top:14px">Log in</button>
+  <div id="loginMsg" class="msg err"></div>
+</div>
+
+<main id="app" class="hidden">
+  <div id="side">
+    <div class="tabs"><button id="tabTrips" class="active">Trips</button><button id="tabRoutes">Routes</button><button id="tabBuses">Buses</button></div>
+
+    <!-- Trips tab -->
+    <section id="tripsPane">
+      <h2 style="margin-top:0">Create a trip</h2>
+      <label for="tRoute">Route</label><select id="tRoute"></select>
+      <label for="tBus">Bus name</label><input id="tBus" placeholder="e.g. Express 101">
+      <label for="tPlate">Number plate <span class="muted">(optional)</span></label><input id="tPlate">
+      <label for="tStart">Trip start (date &amp; time)</label>
+      <input id="tStart" type="datetime-local">
+      <label for="tEnd">Trip end — when it reaches the destination</label>
+      <input id="tEnd" type="datetime-local">
+      <div id="tripLen" class="muted" style="margin-top:6px"></div>
+      <div class="actions"><button id="createTrip">Create trip &amp; get link</button></div>
+
+      <div class="card" style="margin-top:14px;background:#fffbeb;border-color:#f6e2a6">
+        <strong>⚡ Instant test trip</strong>
+        <div class="muted" style="margin:2px 0 8px">Uses the route and bus name above. Starts right now and opens the live map in a new tab.</div>
+        <label for="tTestMin" style="margin-top:0">Reaches destination in (minutes)</label>
+        <div class="row"><input id="tTestMin" type="number" min="1" max="1440" value="10"><button id="instantTrip">⚡ Start now</button></div>
+      </div>
+      <div id="tripMsg" class="msg"></div>
+      <div id="newLink" class="card hidden"></div>
+      <h2>Trips</h2>
+      <div id="tripList"></div>
+    </section>
+
+    <!-- Routes tab -->
+    <section id="routesPane" class="hidden">
+      <div id="routeList"></div>
+      <button id="newRoute" style="width:100%">+ New route</button>
+
+      <div id="routeForm" class="hidden">
+        <h2 id="routeFormTitle">New route</h2>
+        <label for="rName">Route name</label>
+        <input id="rName" placeholder="e.g. Delhi → Jaipur Express">
+        <label for="oIn">Origin (start)</label>
+        <div class="row"><input id="oIn" placeholder="Search a place, or pick on map"><button class="secondary" id="oSearch" title="Search">🔍</button><button class="secondary" id="oPick" title="Pick on map">📍</button></div>
+        <label>Stops in between <span class="muted">(optional) — second box = halt time in minutes</span></label>
+        <div id="stopList"></div>
+        <button class="secondary" id="addVia" style="width:100%">+ Add stop on map</button>
+        <label for="dIn">Destination (end)</label>
+        <div class="row"><input id="dIn" placeholder="Search a place, or pick on map"><button class="secondary" id="dSearch" title="Search">🔍</button><button class="secondary" id="dPick" title="Pick on map">📍</button></div>
+        <div class="muted" style="margin-top:6px">Drag any pin on the map to fine-tune it.</div>
+        <label for="rDur">Trip duration (minutes)</label>
+        <input id="rDur" type="number" min="1" placeholder="Leave empty to use the road-based estimate">
+        <div id="routeInfo" class="muted" style="margin-top:6px"></div>
+        <div class="actions">
+          <button id="previewRoute" class="secondary">Preview road path</button>
+          <button id="saveRoute">Save route</button>
+          <button id="cancelRoute" class="secondary">Cancel</button>
+        </div>
+      </div>
+      <div id="routeMsg" class="msg"></div>
+    </section>
+
+    <!-- Buses tab -->
+    <section id="busesPane" class="hidden">
+      <div id="busList"></div>
+      <h2 id="busFormTitle">Add bus</h2>
+      <label for="bName">Bus name</label><input id="bName" placeholder="e.g. Express 101">
+      <label for="bPlate">Number plate</label><input id="bPlate" placeholder="optional">
+      <label for="bRoute">Route</label><select id="bRoute"></select>
+      <label for="bDeps">Daily departure times <span class="muted">(24h, comma separated)</span></label>
+      <input id="bDeps" placeholder="06:00, 14:30, 22:00">
+      <div class="actions">
+        <button id="saveBus">Save bus</button>
+        <button id="cancelBus" class="secondary hidden">Cancel edit</button>
+      </div>
+      <div id="busMsg" class="msg"></div>
+    </section>
+  </div>
+  <div class="mapwrap"><div id="map"></div><div id="mapHint" class="hidden"></div></div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/js/common.js"></script>
+<script>
+let token = sessionStorage.getItem('token');
+let routes = [], buses = [], trips = [];
+let map;
+let editing = null;      // route id being edited, or 'new', or null
+let stopMarkers = [], previewLine = null, viewLayers = [];
+let editingBus = null;
+
+async function api(method, url, body) {
+  const r = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && token) { logout(); throw new Error('Session expired, please log in again'); }
+  if (!r.ok) throw new Error(j.error || 'Request failed');
+  return j;
+}
+
+const say = (id, text, kind = '') => { const el = $(id); el.textContent = text || ''; el.className = 'msg ' + kind; };
+
+// ---------- auth ----------
+$('loginBtn').onclick = login;
+$('p').addEventListener('keydown', e => e.key === 'Enter' && login());
+async function login() {
+  try {
+    const j = await api('POST', '/api/admin/login', { username: $('u').value, password: $('p').value });
+    token = j.token;
+    sessionStorage.setItem('token', token);
+    $('p').value = '';
+    start();
+  } catch (e) { say('loginMsg', e.message, 'err'); }
+}
+function logout() {
+  token = null;
+  sessionStorage.removeItem('token');
+  $('login').classList.remove('hidden');
+  $('app').classList.add('hidden');
+  $('logout').classList.add('hidden');
+}
+$('logout').onclick = logout;
+
+async function start() {
+  $('login').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  $('logout').classList.remove('hidden');
+  if (!map) {
+    map = makeMap('map');
+    map.on('click', onMapClick);
+  }
+  setTimeout(() => map.invalidateSize(), 0);
+  await refresh();
+}
+
+async function refresh() {
+  [routes, buses, trips] = await Promise.all([api('GET', '/api/admin/routes'), api('GET', '/api/admin/buses'), api('GET', '/api/admin/trips')]);
+  renderRoutes();
+  renderBuses();
+  renderTrips();
+}
+
+// ---------- tabs ----------
+$('tabTrips').onclick = () => tab('trips');
+$('tabRoutes').onclick = () => tab('routes');
+$('tabBuses').onclick = () => tab('buses');
+function tab(t) {
+  $('tripsPane').classList.toggle('hidden', t !== 'trips');
+  $('tabTrips').classList.toggle('active', t === 'trips');
+  $('routesPane').classList.toggle('hidden', t !== 'routes');
+  $('busesPane').classList.toggle('hidden', t !== 'buses');
+  $('tabRoutes').classList.toggle('active', t === 'routes');
+  $('tabBuses').classList.toggle('active', t === 'buses');
+  if (t !== 'routes') closeRouteForm();
+}
+
+// ---------- routes ----------
+function clearMap() {
+  stopMarkers.forEach(m => map.removeLayer(m)); stopMarkers = [];
+  if (previewLine) { map.removeLayer(previewLine); previewLine = null; }
+  viewLayers.forEach(l => map.removeLayer(l)); viewLayers = [];
+}
+
+function renderRoutes() {
+  $('routeList').innerHTML = routes.map(r => `
+    <div class="card">
+      <strong>${esc(r.name)}</strong>
+      <div class="muted">${r.stops.length} stops · ${km(r.distanceM)} · ${fmtDur(r.durationMin)} drive ${r.snapped ? '' : '· ⚠ straight-line'}</div>
+      <div class="actions">
+        <button class="secondary" data-act="view" data-id="${r.id}">View</button>
+        <button class="secondary" data-act="edit" data-id="${r.id}">Edit</button>
+        <button class="danger" data-act="del" data-id="${r.id}">Delete</button>
+      </div>
+    </div>`).join('') || '<div class="muted" style="margin-bottom:8px">No routes yet.</div>';
+  $('routeList').querySelectorAll('button').forEach(b => b.onclick = () => routeAction(b.dataset.act, b.dataset.id));
+  const opts = routes.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  $('bRoute').innerHTML = opts;
+  $('tRoute').innerHTML = opts;
+}
+
+async function routeAction(act, id) {
+  const r = routes.find(x => x.id === id);
+  if (act === 'view') {
+    closeRouteForm();
+    viewLayers.push(L.polyline(r.path, { color: '#d63a3a', weight: 5 }).addTo(map));
+    r.stops.forEach((s, i) => viewLayers.push(L.marker([s.lat, s.lng], { icon: pinIcon(i + 1, '#d63a3a') }).addTo(map).bindTooltip(esc(s.name))));
+    map.fitBounds(viewLayers[0].getBounds(), { padding: [40, 40] });
+  } else if (act === 'edit') {
+    openRouteForm(r);
+  } else if (act === 'del') {
+    if (!confirm(`Delete route "${r.name}"?`)) return;
+    try { await api('DELETE', '/api/admin/routes/' + id); await refresh(); say('routeMsg', 'Route deleted.', 'ok'); }
+    catch (e) { say('routeMsg', e.message, 'err'); }
+  }
+}
+
+$('newRoute').onclick = () => openRouteForm(null);
+$('cancelRoute').onclick = closeRouteForm;
+
+// Origin and destination are their own fields; `via` holds optional stops between them.
+let origin = null, dest = null, via = [];
+let pickMode = 'origin'; // what the next map click sets: 'origin' | 'dest' | 'via'
+const allStops = () => [origin, ...via, dest].filter(Boolean);
+const PICK_HINT = { origin: 'Click the map to set the ORIGIN', dest: 'Click the map to set the DESTINATION', via: 'Click the map to add an intermediate stop' };
+
+function setPick(m) {
+  pickMode = m;
+  $('oPick').classList.toggle('active', m === 'origin');
+  $('dPick').classList.toggle('active', m === 'dest');
+  $('addVia').classList.toggle('active', m === 'via');
+  $('mapHint').textContent = PICK_HINT[m];
+}
+$('oPick').onclick = () => setPick('origin');
+$('dPick').onclick = () => setPick('dest');
+$('addVia').onclick = () => setPick('via');
+
+function openRouteForm(r) {
+  clearMap();
+  editing = r ? r.id : 'new';
+  origin = r ? { ...r.stops[0] } : null;
+  dest = r ? { ...r.stops[r.stops.length - 1] } : null;
+  via = r ? r.stops.slice(1, -1).map(s => ({ ...s })) : [];
+  $('routeFormTitle').textContent = r ? 'Edit route' : 'New route';
+  $('rName').value = r ? r.name : '';
+  $('oIn').value = origin ? origin.name : '';
+  $('dIn').value = dest ? dest.name : '';
+  $('rDur').value = r ? r.durationMin : '';
+  $('rDur').placeholder = 'Leave empty to use the road-based estimate';
+  $('routeInfo').textContent = '';
+  $('routeForm').classList.remove('hidden');
+  $('newRoute').classList.add('hidden');
+  $('mapHint').classList.remove('hidden');
+  say('routeMsg');
+  setPick(r ? 'via' : 'origin');
+  drawStops();
+  if (r) { previewLine = L.polyline(r.path, { color: '#2563eb', weight: 5, opacity: .6 }).addTo(map); map.fitBounds(previewLine.getBounds(), { padding: [40, 40] }); }
+}
+
+function closeRouteForm() {
+  editing = null;
+  clearMap();
+  $('routeForm').classList.add('hidden');
+  $('newRoute').classList.remove('hidden');
+  $('mapHint').classList.add('hidden');
+}
+
+// Fill in a place name for a point the admin picked by clicking the map.
+async function reverseName(p, apply) {
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=16&lat=${p.lat}&lon=${p.lng}`);
+    const j = await r.json();
+    const n = j.name || (j.display_name || '').split(',')[0];
+    if (n && p.autoName) { p.name = n; apply(n); }
+  } catch { /* keep the default name */ }
+}
+
+function setPoint(kind, lat, lng, name) {
+  const p = { name: name || (kind === 'origin' ? 'Origin' : 'Destination'), lat: +lat.toFixed(6), lng: +lng.toFixed(6), autoName: !name };
+  if (kind === 'origin') origin = p; else dest = p;
+  const input = $(kind === 'origin' ? 'oIn' : 'dIn');
+  input.value = p.name;
+  if (p.autoName) reverseName(p, n => { input.value = n; });
+  invalidatePreview();
+  drawStops();
+}
+
+function onMapClick(e) {
+  if (!editing) return;
+  const { lat, lng } = e.latlng;
+  if (pickMode === 'origin') { setPoint('origin', lat, lng); setPick(dest ? 'via' : 'dest'); }
+  else if (pickMode === 'dest') { setPoint('dest', lat, lng); setPick('via'); }
+  else {
+    via.push({ name: `Stop ${via.length + 1}`, lat: +lat.toFixed(6), lng: +lng.toFixed(6), haltMin: 2 });
+    invalidatePreview();
+    drawStops();
+  }
+}
+
+// Type a place name (or "lat,lng") and press Enter / the search button.
+async function search(kind) {
+  const input = $(kind === 'origin' ? 'oIn' : 'dIn');
+  const q = input.value.trim();
+  if (!q) return;
+  const m = q.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
+  try {
+    let lat, lng;
+    if (m) { lat = +m[1]; lng = +m[3]; }
+    else {
+      say('routeMsg', 'Searching…');
+      const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q));
+      const j = await r.json();
+      if (!j.length) return say('routeMsg', `Couldn't find "${q}". Try a bigger place name or pick it on the map.`, 'err');
+      lat = +j[0].lat; lng = +j[0].lon;
+    }
+    setPoint(kind, lat, lng, m ? undefined : q);
+    map.setView([lat, lng], Math.max(map.getZoom(), 13));
+    say('routeMsg');
+    if (kind === 'origin') setPick(dest ? 'via' : 'dest');
+    else setPick('via');
+  } catch { say('routeMsg', 'Search failed. Pick the point on the map instead.', 'err'); }
+}
+[['o', 'origin'], ['d', 'dest']].forEach(([p, kind]) => {
+  $(p + 'Search').onclick = () => search(kind);
+  $(p + 'In').addEventListener('keydown', e => e.key === 'Enter' && search(kind));
+  $(p + 'In').addEventListener('input', e => {
+    const pt = kind === 'origin' ? origin : dest;
+    if (pt) { pt.name = e.target.value; pt.autoName = false; }
+  });
+});
+
+function invalidatePreview() {
+  if (previewLine) { map.removeLayer(previewLine); previewLine = null; }
+  $('routeInfo').textContent = '';
+}
+
+function drawStops() {
+  stopMarkers.forEach(m => map.removeLayer(m));
+  stopMarkers = [];
+  const place = (s, label, color, onMove) => {
+    const m = L.marker([s.lat, s.lng], { draggable: true, icon: pinIcon(label, color) }).addTo(map).bindTooltip(esc(s.name));
+    m.on('dragend', () => {
+      const p = m.getLatLng();
+      s.lat = +p.lat.toFixed(6); s.lng = +p.lng.toFixed(6);
+      if (s.autoName) reverseName(s, onMove);
+      invalidatePreview();
+    });
+    stopMarkers.push(m);
+  };
+  if (origin) place(origin, 'A', '#16a34a', n => { $('oIn').value = n; });
+  via.forEach((s, i) => place(s, i + 1, '#d63a3a'));
+  if (dest) place(dest, 'B', '#1c2430', n => { $('dIn').value = n; });
+
+  $('stopList').innerHTML = via.map((s, i) => `
+    <div class="stop">
+      <span class="n">${i + 1}</span>
+      <input value="${esc(s.name)}" data-i="${i}" aria-label="Stop ${i + 1} name">
+      <input class="halt" type="number" min="0" max="60" step="0.5" value="${s.haltMin ?? 2}" data-halt="${i}" title="Halt at this stop (minutes)" aria-label="Halt minutes at stop ${i + 1}">
+      <button class="secondary" data-up="${i}" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+      <button class="secondary" data-down="${i}" ${i === via.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+      <button class="danger" data-rm="${i}" title="Remove">✕</button>
+    </div>`).join('') || '<div class="muted">None — direct from origin to destination.</div>';
+  const list = $('stopList');
+  list.querySelectorAll('input[data-i]').forEach(inp => inp.oninput = () => { via[+inp.dataset.i].name = inp.value; });
+  list.querySelectorAll('input[data-halt]').forEach(inp => inp.oninput = () => { via[+inp.dataset.halt].haltMin = inp.value === '' ? 2 : Number(inp.value); });
+  list.querySelectorAll('[data-up]').forEach(b => b.onclick = () => swap(+b.dataset.up, -1));
+  list.querySelectorAll('[data-down]').forEach(b => b.onclick = () => swap(+b.dataset.down, 1));
+  list.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { via.splice(+b.dataset.rm, 1); invalidatePreview(); drawStops(); });
+}
+
+function swap(i, d) {
+  [via[i], via[i + d]] = [via[i + d], via[i]];
+  invalidatePreview();
+  drawStops();
+}
+
+const stopsPayload = () => allStops().map(({ name, lat, lng, haltMin }) => ({ name, lat, lng, haltMin }));
+function needEnds() {
+  if (origin && dest) return false;
+  say('routeMsg', 'Set both an origin and a destination first.', 'err');
+  return true;
+}
+
+$('previewRoute').onclick = async () => {
+  if (needEnds()) return;
+  try {
+    say('routeMsg', 'Finding road path…');
+    const j = await api('POST', '/api/admin/routes/preview', { stops: stopsPayload() });
+    invalidatePreview();
+    previewLine = L.polyline(j.path, { color: '#2563eb', weight: 5, opacity: .6 }).addTo(map);
+    map.fitBounds(previewLine.getBounds(), { padding: [40, 40] });
+    $('routeInfo').textContent = `${km(j.distanceM)} by road · suggested ${fmtDur(j.suggestedDurationMin)}`;
+    if (!$('rDur').value) $('rDur').placeholder = `Suggested: ${j.suggestedDurationMin}`;
+    say('routeMsg', j.warning || '', j.warning ? 'err' : '');
+  } catch (e) { say('routeMsg', e.message, 'err'); }
+};
+
+$('saveRoute').onclick = async () => {
+  if (needEnds()) return;
+  const name = $('rName').value.trim() || `${origin.name} → ${dest.name}`;
+  const body = { name, stops: stopsPayload(), durationMin: Number($('rDur').value) || undefined };
+  try {
+    say('routeMsg', 'Saving…');
+    if (editing === 'new') await api('POST', '/api/admin/routes', body);
+    else await api('PUT', '/api/admin/routes/' + editing, body);
+    closeRouteForm();
+    await refresh();
+    say('routeMsg', 'Route saved.', 'ok');
+  } catch (e) { say('routeMsg', e.message, 'err'); }
+};
+
+// ---------- trips ----------
+const localInput = ms => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
+$('tStart').value = localInput(Date.now());
+
+function updateLen() {
+  const a = new Date($('tStart').value).getTime(), b = new Date($('tEnd').value).getTime();
+  const route = routes.find(r => r.id === $('tRoute').value);
+  const el = $('tripLen');
+  el.style.color = '';
+  if (!route || !Number.isFinite(a) || !Number.isFinite(b)) { el.textContent = ''; return; }
+  if (b <= a) { el.textContent = 'End must be after the start.'; el.style.color = '#b42318'; return; }
+  const min = (b - a) / 60000;
+  const halts = route.stops.slice(1, -1).reduce((t, s) => t + (s.haltMin ?? 2), 0);
+  const moving = min - halts;
+  if (moving < 1) { el.textContent = `Too short: stops alone take ${fmtDur(Math.round(halts))}.`; el.style.color = '#b42318'; return; }
+  const kmh = route.distanceM / 1000 / (moving / 60);
+  el.textContent = `Trip length ${fmtDur(Math.round(min))}, including ${fmtDur(Math.round(halts)) || '0 min'} of halts. Average moving speed ≈ ${Math.round(kmh)} km/h`
+    + (kmh > 90 ? ' — unrealistically fast for a bus' : kmh < 12 ? ' — very slow' : '') + `. Road estimate: ${fmtDur(route.durationMin)} driving.`;
+  if (kmh > 90 || kmh < 12) el.style.color = '#b45309';
+}
+['tStart', 'tEnd', 'tRoute'].forEach(id => $(id).addEventListener('input', updateLen));
+
+function tripStatus(t) {
+  const now = Date.now(), end = t.endAt;
+  return now < t.startAt ? ['Scheduled', 'scheduled'] : now < end ? ['Live', 'running'] : ['Finished', 'inactive'];
+}
+
+function renderTrips() {
+  $('tripList').innerHTML = trips.slice().sort((a, b) => b.createdAt - a.createdAt).map(t => {
+    const r = routes.find(x => x.id === t.routeId);
+    const [label, cls] = tripStatus(t);
+    return `<div class="card">
+      <div class="row" style="justify-content:space-between"><strong>${esc(t.busName)}</strong><span class="badge ${cls}">${label}</span></div>
+      <div class="muted">${r ? esc(r.name) : '⚠ route missing'}<br>${new Date(t.startAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} → ${new Date(t.endAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>
+      <div class="actions">
+        <button class="secondary" data-act="copy" data-id="${t.id}">Copy link</button>
+        <button class="secondary" data-act="open" data-id="${t.id}">Open ↗</button>
+        <button class="danger" data-act="del" data-id="${t.id}">Delete</button>
+      </div></div>`;
+  }).join('') || '<div class="muted">No trips yet.</div>';
+  $('tripList').querySelectorAll('button').forEach(b => b.onclick = () => tripAction(b.dataset.act, b.dataset.id));
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy'); ta.remove(); return ok;
+  }
+}
+
+async function tripAction(act, id) {
+  const t = trips.find(x => x.id === id);
+  try {
+    if (act === 'copy') say('tripMsg', (await copyText(t.url)) ? 'Link copied.' : 'Copy failed — select the link manually.', 'ok');
+    else if (act === 'open') window.open(t.url, '_blank');
+    else if (act === 'del') {
+      if (!confirm(`Delete the trip for "${t.busName}"? Its link will stop working.`)) return;
+      await api('DELETE', '/api/admin/trips/' + id);
+      $('newLink').classList.add('hidden');
+      await refresh();
+    }
+  } catch (e) { say('tripMsg', e.message, 'err'); }
+}
+
+async function submitTrip(startAt, endAt, { instant = false, win = null } = {}) {
+  try {
+    const t = await api('POST', '/api/admin/trips', {
+      routeId: $('tRoute').value, busName: $('tBus').value.trim() || (instant ? 'Test bus' : ''), plate: $('tPlate').value, startAt, endAt,
+    });
+    say('tripMsg', instant ? 'Test trip started.' + (win ? '' : ' (Pop-up blocked — use Open ↗ below.)') : 'Trip created.', 'ok');
+    $('newLink').innerHTML = `<div class="muted">Share this link — it opens the live map:</div>
+      <input readonly value="${esc(t.url)}" onfocus="this.select()" style="margin:6px 0">
+      <div class="actions"><button id="copyNew">Copy link</button><a href="${esc(t.url)}" target="_blank"><button class="secondary" type="button">Open ↗</button></a></div>`;
+    $('newLink').classList.remove('hidden');
+    $('copyNew').onclick = async () => say('tripMsg', (await copyText(t.url)) ? 'Link copied.' : 'Copy failed — select the link manually.', 'ok');
+    if (win) win.location = t.url;
+    if (!instant) { $('tBus').value = ''; $('tPlate').value = ''; $('tEnd').value = ''; updateLen(); }
+    await refresh();
+  } catch (e) {
+    if (win) win.close();
+    say('tripMsg', e.message, 'err');
+  }
+}
+
+$('createTrip').onclick = () => {
+  const startAt = new Date($('tStart').value).getTime();
+  const endAt = new Date($('tEnd').value).getTime();
+  if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) return say('tripMsg', 'Set both the start and end date & time.', 'err');
+  submitTrip(startAt, endAt);
+};
+
+$('instantTrip').onclick = () => {
+  const min = Number($('tTestMin').value);
+  if (!(min >= 1 && min <= 1440)) return say('tripMsg', 'Enter test length between 1 and 1440 minutes.', 'err');
+  if (!$('tRoute').value) return say('tripMsg', 'Create a route first.', 'err');
+  const win = window.open('', '_blank'); // open now (inside the click) so pop-up blockers allow it
+  const now = Date.now();
+  submitTrip(now, now + min * 60000, { instant: true, win });
+};
+
+// ---------- buses ----------
+function renderBuses() {
+  $('busList').innerHTML = buses.map(b => {
+    const r = routes.find(x => x.id === b.routeId);
+    const running = b.tripStart && Date.now() - b.tripStart < (r ? r.durationMin * 60000 : 0);
+    return `<div class="card">
+      <strong>${esc(b.name)}</strong> <span class="muted">${esc(b.plate || '')}</span>
+      <div class="muted">${r ? esc(r.name) : '⚠ route missing'}<br>Departs: ${b.departures.length ? b.departures.join(', ') : 'none set'}</div>
+      <div class="actions">
+        ${running
+          ? `<button class="secondary" data-act="stop" data-id="${b.id}">End test trip</button>`
+          : `<button class="secondary" data-act="now" data-id="${b.id}">▶ Start trip now</button>`}
+        <button class="secondary" data-act="edit" data-id="${b.id}">Edit</button>
+        <button class="danger" data-act="del" data-id="${b.id}">Delete</button>
+      </div></div>`;
+  }).join('') || '<div class="muted" style="margin-bottom:8px">No buses yet.</div>';
+  $('busList').querySelectorAll('button').forEach(b => b.onclick = () => busAction(b.dataset.act, b.dataset.id));
+}
+
+async function busAction(act, id) {
+  const b = buses.find(x => x.id === id);
+  try {
+    if (act === 'now') await api('POST', `/api/admin/buses/${id}/start-now`);
+    else if (act === 'stop') await api('POST', `/api/admin/buses/${id}/stop`);
+    else if (act === 'del') { if (!confirm(`Delete bus "${b.name}"?`)) return; await api('DELETE', '/api/admin/buses/' + id); }
+    else if (act === 'edit') {
+      editingBus = id;
+      $('busFormTitle').textContent = 'Edit bus';
+      $('bName').value = b.name; $('bPlate').value = b.plate || ''; $('bRoute').value = b.routeId; $('bDeps').value = b.departures.join(', ');
+      $('cancelBus').classList.remove('hidden');
+      return;
+    }
+    await refresh();
+    say('busMsg', act === 'now' ? 'Trip started — check the rider site.' : 'Done.', 'ok');
+  } catch (e) { say('busMsg', e.message, 'err'); }
+}
+
+function resetBusForm() {
+  editingBus = null;
+  $('busFormTitle').textContent = 'Add bus';
+  ['bName', 'bPlate', 'bDeps'].forEach(i => $(i).value = '');
+  $('cancelBus').classList.add('hidden');
+}
+$('cancelBus').onclick = resetBusForm;
+
+$('saveBus').onclick = async () => {
+  const body = {
+    name: $('bName').value, plate: $('bPlate').value, routeId: $('bRoute').value,
+    departures: $('bDeps').value.split(',').map(s => s.trim()).filter(Boolean),
+  };
+  try {
+    if (editingBus) await api('PUT', '/api/admin/buses/' + editingBus, body);
+    else await api('POST', '/api/admin/buses', body);
+    resetBusForm();
+    await refresh();
+    say('busMsg', 'Bus saved.', 'ok');
+  } catch (e) { say('busMsg', e.message, 'err'); }
+};
+
+if (token) start().catch(() => logout());
+</script>
+</body>
+</html>

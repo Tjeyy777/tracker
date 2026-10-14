@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Bus Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="rider">
+<header>
+  <h1>🚌 Live Bus Tracker</h1>
+</header>
+<main>
+  <div id="side">
+    <label for="routeSel">Route</label>
+    <select id="routeSel"></select>
+    <div id="routeInfo" class="muted" style="margin-top:6px"></div>
+
+    <h2>Buses on this route</h2>
+    <div id="buses"></div>
+
+    <div id="detail"></div>
+  </div>
+  <div id="map"></div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/busicon.js"></script>
+<script>
+const map = makeMap('map');
+let routes = [];
+let route = null;
+let routeLayers = [];
+let buses = [];
+let selectedBus = null;
+const markers = new Map(); // busId -> marker
+let followed = true;
+
+async function init() {
+  routes = await (await fetch('/api/routes')).json();
+  const sel = $('routeSel');
+  if (!routes.length) {
+    sel.innerHTML = '<option>No routes yet</option>';
+    $('buses').innerHTML = '<div class="muted">The admin has not added any routes yet.</div>';
+    return;
+  }
+  document.body.classList.toggle('single-route', routes.length < 2);
+  sel.innerHTML = routes.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  const fromHash = routes.find(r => r.id === location.hash.slice(1));
+  sel.value = (fromHash || routes[0]).id;
+  sel.onchange = () => chooseRoute(sel.value);
+  chooseRoute(sel.value);
+  connect();
+}
+
+function chooseRoute(id) {
+  route = routes.find(r => r.id === id);
+  location.hash = id;
+  selectedBus = null;
+  routeLayers.forEach(l => map.removeLayer(l));
+  routeLayers = [];
+  markers.forEach(m => map.removeLayer(m));
+  markers.clear();
+
+  const line = L.polyline(route.path, { color: '#d63a3a', weight: 5, opacity: .75 }).addTo(map);
+  routeLayers.push(line);
+  route.stops.forEach((s, i) => {
+    const color = i === 0 ? '#16a34a' : i === route.stops.length - 1 ? '#1c2430' : '#d63a3a';
+    routeLayers.push(L.marker([s.lat, s.lng], { icon: pinIcon(i + 1, color) }).addTo(map).bindTooltip(esc(s.name)));
+  });
+  map.fitBounds(line.getBounds(), { padding: [40, 40] });
+  $('routeInfo').textContent = `${route.stops.length} stops · ${km(route.distanceM)} · about ${fmtDur(route.durationMin)}`;
+  render();
+}
+
+function connect() {
+  const es = new EventSource('/api/live');
+  es.onmessage = e => { buses = JSON.parse(e.data); render(); };
+  // EventSource reconnects automatically on error.
+}
+
+
+function render() {
+  if (!route) return;
+  const mine = buses.filter(b => b.routeId === route.id);
+
+  // markers
+  const seen = new Set();
+  for (const b of mine) {
+    if (b.status !== 'running') continue;
+    seen.add(b.id);
+    let m = markers.get(b.id);
+    if (!m) {
+      m = L.marker([b.lat, b.lng], { icon: busTopIcon(), zIndexOffset: 1000 }).addTo(map);
+      m.on('click', () => selectBus(b.id));
+      markers.set(b.id, m);
+    } else m.setLatLng([b.lat, b.lng]);
+    setBusHeading(m, b.bearing);
+    m.bindTooltip(esc(b.name));
+  }
+  for (const [id, m] of markers) if (!seen.has(id)) { map.removeLayer(m); markers.delete(id); }
+
+  // bus list
+  $('buses').innerHTML = mine.length ? mine.map(b => {
+    const sub = b.status === 'running'
+      ? (b.nextStop ? `Next: ${esc(b.nextStop.name)} in ${b.nextStop.etaMin} min` : 'Arriving at last stop')
+      : b.status === 'scheduled'
+        ? (b.nextDeparture ? `Departs ${fmtTime(b.nextDeparture)}` : 'No departures set')
+        : 'Not in service';
+    return `<div class="card click ${b.id === selectedBus ? 'sel' : ''}" data-id="${b.id}">
+      <div class="row" style="justify-content:space-between"><strong>${esc(b.name)}</strong><span class="badge ${b.status}">${b.status === 'running' ? 'Live' : b.status}</span></div>
+      <div class="muted">${esc(b.plate || '')} ${b.plate ? '·' : ''} ${sub}</div></div>`;
+  }).join('') : '<div class="muted">No buses assigned to this route.</div>';
+  $('buses').querySelectorAll('.card').forEach(c => c.onclick = () => selectBus(c.dataset.id));
+
+  renderDetail(mine);
+  if (selectedBus && followed) {
+    const b = mine.find(x => x.id === selectedBus);
+    if (b && b.status === 'running') map.panTo([b.lat, b.lng], { animate: true });
+  }
+}
+
+function selectBus(id) {
+  selectedBus = id;
+  followed = true;
+  render();
+}
+map.on('dragstart', () => { followed = false; });
+
+function renderDetail(mine) {
+  const b = mine.find(x => x.id === selectedBus);
+  if (!b) { $('detail').innerHTML = ''; return; }
+  if (b.status !== 'running') {
+    $('detail').innerHTML = `<h2>${esc(b.name)}</h2><div class="muted">This bus isn't on a trip right now.</div>`;
+    return;
+  }
+  const next = b.nextStop;
+  $('detail').innerHTML = `
+    <h2>${esc(b.name)} — ${(b.progress * 100).toFixed(0)}% of trip</h2>
+    <div class="muted" style="margin-bottom:12px">${next ? `Reaches ${esc(next.name)} at ${fmtTime(Date.now() + next.etaMin * 60000)}` : 'Arriving'}</div>
+    <ul class="timeline">${b.stops.map((s, i) => {
+      const cls = s.passed ? 'passed' : i === b.stops.findIndex(x => !x.passed) ? 'next' : '';
+      return `<li class="${cls}"><span>${esc(s.name)}</span><span class="eta">${s.passed ? 'Departed' : fmtTime(Date.now() + s.etaMin * 60000)}</span></li>`;
+    }).join('')}</ul>`;
+}
+
+addEventListener('resize', () => map.invalidateSize());
+
+init();
+</script>
+</body>
+</html>

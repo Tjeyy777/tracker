@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Track your bus</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; color: #1c2430; }
+  #map { position: absolute; inset: 0; }
+  #pill { position: absolute; z-index: 1000; top: 10px; left: 56px; right: 10px; max-width: 420px; background: #fff; border-radius: 12px; padding: 8px 12px; box-shadow: 0 2px 10px #0004; font-size: 14px; }
+  #pill b { display: block; font-size: 15px; }
+  #pill #pAge { display: block; margin-top: 2px; font-size: 12px; color: #16a34a; }
+  #pill #pAge.stale { color: #b45309; font-weight: 600; }
+  #pill span { color: #667085; font-size: 13px; }
+  #speed { position: absolute; z-index: 1000; left: 10px; bottom: 24px; width: 66px; height: 66px; border-radius: 50%; background: #fff; box-shadow: 0 2px 10px #0004; display: none; flex-direction: column; align-items: center; justify-content: center; border: 4px solid #16a34a; transition: border-color .4s; }
+  #speed b { font-size: 22px; line-height: 22px; font-variant-numeric: tabular-nums; }
+  #speed small { font-size: 10px; color: #667085; letter-spacing: .03em; }
+  #recenter { position: absolute; z-index: 1000; bottom: 24px; right: 10px; width: 44px; height: 44px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 2px 10px #0005; font-size: 20px; cursor: pointer; display: none; }
+  #error { position: absolute; inset: 0; z-index: 2000; background: #f6f8fb; display: none; align-items: center; justify-content: center; text-align: center; padding: 24px; font-size: 16px; }
+  .pin { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 700; text-align: center; line-height: 18px; border: 2px solid #fff; box-shadow: 0 1px 4px #0006; }
+  .stop-label { background: #fff; border: 0; border-radius: 6px; padding: 3px 7px; font-size: 12px; font-weight: 600; color: #1c2430; box-shadow: 0 1px 5px #0005; }
+  .stop-label::before { display: none; }
+  .stop-label.passed { color: #166534; }
+  .stop-label.halt { background: #fef3c7; color: #92400e; }
+  .pin.halt { box-shadow: 0 0 0 5px #f59e0b66, 0 1px 4px #0006; }
+  .hide-labels .stop-label.mid { display: none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="pill"><b id="pTitle">Loading…</b><span id="pSub"></span><span id="pAge"></span></div>
+<div id="speed" aria-live="off"><b id="spVal">0</b><small>km/h</small></div>
+<button id="recenter" aria-label="Follow bus">🎯</button>
+<div id="error"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/js/busicon.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tripId = location.pathname.split('/').pop();
+
+const map = L.map('map', { zoomControl: true });
+const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const base = {
+  Streets: L.tileLayer(esri + 'World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri' }),
+  Satellite: L.tileLayer(esri + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri' }),
+};
+base.Streets.addTo(map);
+L.control.layers(base).addTo(map);
+
+let stopMarkers = [];
+// state: todo (red) | passed (green) | halt (amber glow); first/last keep A / B labels
+function stopIcon(i, last, state) {
+  const color = i === 0 ? '#16a34a' : last ? '#1c2430' : state === 'passed' ? '#16a34a' : '#d63a3a';
+  const txt = i === 0 ? 'A' : last ? 'B' : i;
+  return L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11], html: `<div class="pin ${state === 'halt' ? 'halt' : ''}" style="background:${color}">${txt}</div>` });
+}
+
+const R = 6371000, rad = d => d * Math.PI / 180;
+const dist = (a, b) => {
+  const s = Math.sin(rad(b[0] - a[0]) / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(rad(b[1] - a[1]) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+};
+
+let data, offset = 0, cum = [], busMarker, doneLine, following = true;
+let rev, lastSync = Date.now(), failures = 0, syncing = false; // connection health
+
+function posAt(frac) {
+  const p = data.route.path, total = cum[cum.length - 1];
+  const d = Math.min(Math.max(frac, 0), 1) * total;
+  let lo = 1, hi = cum.length - 1; // first vertex at or beyond distance d
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < d) lo = mid + 1; else hi = mid; }
+  const i = lo;
+  const t = (d - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
+  const a = p[i - 1], b = p[i];
+  return { ll: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], idx: i };
+}
+
+const fmtClock = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function fmtCountdown(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + sec + 's';
+}
+
+function showError(msg) { $('error').textContent = msg; $('error').style.display = 'flex'; }
+
+async function timedFetch(url, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { signal: ctl.signal, cache: 'no-store' }); } finally { clearTimeout(timer); }
+}
+
+async function load() {
+  const retry = () => {
+    $('pTitle').textContent = 'Connecting…';
+    $('pSub').textContent = 'Slow or no connection — retrying';
+    setTimeout(load, 4000);
+  };
+  let r;
+  try { r = await timedFetch('/api/trips/' + encodeURIComponent(tripId), 20000); }
+  catch { return retry(); }
+  if (r.status >= 502 && r.status <= 504) return retry();
+  if (!r.ok) return showError((await r.json().catch(() => ({}))).error || 'Trip not found.');
+  try { data = await r.json(); } catch { return retry(); } // body cut off mid-download
+  offset = data.serverNow - Date.now(); // corrects for a wrong clock on the phone
+  rev = data.rev;
+  lastSync = Date.now();
+  document.title = data.trip.busName + ' · live';
+
+  const { path, stops } = data.route;
+  cum = [0];
+  for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + dist(path[i - 1], path[i]));
+
+  const line = L.polyline(path, { color: '#d63a3a', weight: 5, opacity: .7 }).addTo(map);
+  doneLine = L.polyline([], { color: '#16a34a', weight: 6 }).addTo(map);
+  stopMarkers = stops.map((s, i) => {
+    const last = i === stops.length - 1;
+    const m = L.marker([s.lat, s.lng], { icon: stopIcon(i, last, 'todo') }).addTo(map);
+    m.bindTooltip(esc(s.name), { permanent: true, direction: 'right', offset: [12, 0], className: 'stop-label' + (i > 0 && !last ? ' mid' : '') });
+    m._state = 'todo';
+    return m;
+  });
+  // on a zoomed-out map, keep only the first and last labels so a long route isn't cluttered
+  const toggleLabels = () => map.getContainer().classList.toggle('hide-labels', map.getZoom() < 9);
+  map.on('zoomend', toggleLabels);
+  map.fitBounds(line.getBounds(), { padding: [60, 60] });
+  toggleLabels();
+  busMarker = L.marker(path[0], { icon: busTopIcon(), zIndexOffset: 1000 }).addTo(map);
+  setBusHeading(busMarker, bearingBetween(path[0], path[Math.min(5, path.length - 1)]));
+  map.on('dragstart', () => { following = false; $('recenter').style.display = 'block'; });
+  $('recenter').onclick = () => { following = true; $('recenter').style.display = 'none'; };
+  requestAnimationFrame(frame);
+  setInterval(sync, 10000);
+}
+
+// Where is the bus (0..1 along the route) `elapsed` ms after the start? Follows the server's schedule
+// (halts at stops, slower on turns), so what you see matches the ETAs.
+function fracAt(elapsed) {
+  const tl = data.schedule.timeline;
+  if (elapsed <= 0) return 0;
+  if (elapsed >= tl[tl.length - 1][0]) return 1;
+  let lo = 0, hi = tl.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (tl[mid][0] <= elapsed) lo = mid; else hi = mid; }
+  const [t0, f0] = tl[lo], [t1, f1] = tl[hi];
+  return t1 === t0 ? f1 : f0 + ((f1 - f0) * (elapsed - t0)) / (t1 - t0);
+}
+
+// Current speed in km/h: distance covered in a 20 s window around now, from the same schedule that moves the bus.
+let shownSpeed = 0, lastFrame = 0, lastSlow = 0, shownV = -1, shownBand = '';
+function speedAt(elapsed) {
+  const total = cum[cum.length - 1];
+  const a = Math.max(0, elapsed - 10000), b = elapsed + 10000;
+  return ((fracAt(b) - fracAt(a)) * total / ((b - a) / 1000)) * 3.6;
+}
+const setText = (id, text) => { const el = $(id); if (el.textContent !== text) el.textContent = text; };
+
+// Cheap work every frame (smooth movement). Heavier DOM / polyline work runs 4x a second in slowUpdate.
+function frame(ts) {
+  const { startAt, endAt } = data.trip;
+  const now = Date.now() + offset;
+  const elapsed = now - startAt;
+  const frac = fracAt(elapsed);
+  const { ll, idx } = posAt(frac);
+  busMarker.setLatLng(ll);
+  // face the direction of travel (look ~40 m ahead so the heading doesn't jitter at tiny segments)
+  const total = cum[cum.length - 1];
+  if (frac < 1) {
+    const ahead = posAt(Math.min(1, frac + 40 / total)).ll;
+    if (ahead[0] !== ll[0] || ahead[1] !== ll[1]) setBusHeading(busMarker, bearingBetween(ll, ahead));
+  }
+
+  // speed badge: eases toward the target so the number doesn't flicker
+  const running = elapsed >= 0 && now < endAt;
+  $('speed').style.display = running ? 'flex' : 'none';
+  if (running) {
+    const dt = Math.min(0.1, (ts - lastFrame) / 1000 || 0.016);
+    shownSpeed += (speedAt(elapsed) - shownSpeed) * Math.min(1, dt * 3);
+    // an exact halt reads 0, not 0.4
+    const v = frac > 0 && frac < 1 && fracAt(elapsed + 1500) === fracAt(elapsed - 1500) ? 0 : Math.round(shownSpeed);
+    if (v === 0) shownSpeed = 0;
+    if (v !== shownV) { shownV = v; $('spVal').textContent = v; }
+    const band = v === 0 ? '#9ca3af' : v < 30 ? '#f59e0b' : v > 75 ? '#dc2626' : '#16a34a';
+    if (band !== shownBand) { shownBand = band; $('speed').style.borderColor = band; }
+  }
+  lastFrame = ts;
+
+  if (ts - lastSlow > 250 || now >= endAt) { lastSlow = ts; slowUpdate(elapsed, now, ll, idx); }
+  if (now < endAt) requestAnimationFrame(frame);
+}
+
+// Heartbeat: shows how fresh our contact with the server is, re-syncs the clock, and reloads if the admin edited the trip.
+async function sync() {
+  if (syncing) return;
+  syncing = true;
+  const t0 = Date.now();
+  try {
+    const r = await timedFetch(`/api/trips/${encodeURIComponent(tripId)}/ping`, 8000);
+    if (r.status === 404) return showError('This trip is no longer available.');
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    if (j.rev !== rev) return location.reload();
+    const fresh = j.serverNow + (Date.now() - t0) / 2 - Date.now(); // assume the reply took half the round trip
+    if (Math.abs(fresh - offset) > 3000) offset = fresh;           // ignore small jitter so the bus doesn't hop
+    lastSync = Date.now();
+    failures = 0;
+  } catch { failures++; }
+  finally { syncing = false; }
+}
+addEventListener('online', sync);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); }); // phone woke up
+
+function ago(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + ' sec ago';
+  const m = Math.floor(s / 60);
+  return m < 60 ? m + ' min ago' : Math.floor(m / 60) + ' h ago';
+}
+
+function updateAge(ended) {
+  const el = $('pAge');
+  const age = Date.now() - lastSync;
+  const offline = failures >= 2 || !navigator.onLine;
+  if (ended && !offline) { setText('pAge', ''); return; }
+  el.classList.toggle('stale', offline || age > 30000);
+  setText('pAge', offline
+    ? `Poor connection · position is estimated · last updated ${ago(age)}`
+    : age < 15000 ? 'Updated just now' : `Updated ${ago(age)}`);
+}
+
+function slowUpdate(elapsed, now, ll, idx) {
+  updateAge(now >= data.trip.endAt);
+  const { startAt, endAt, busName, plate } = data.trip;
+  const stops = data.route.stops, st = data.schedule.stops;
+  doneLine.setLatLngs([...data.route.path.slice(0, idx), ll]);
+
+  // stops the bus has passed turn green; the one it is halted at glows
+  stopMarkers.forEach((m, i) => {
+    const last = i === stops.length - 1;
+    const state = i > 0 && i < stops.length - 1 && elapsed >= st[i].arrive && elapsed < st[i].depart ? 'halt'
+      : i > 0 && elapsed >= st[i].depart && !last ? 'passed' : 'todo';
+    if (m._state === state) return;
+    m._state = state;
+    m.setIcon(stopIcon(i, last, state));
+    const tip = m.getTooltip() && m.getTooltip().getElement();
+    if (tip) { tip.classList.toggle('passed', state === 'passed'); tip.classList.toggle('halt', state === 'halt'); }
+  });
+
+  setText('pTitle', busName + (plate ? ' · ' + plate : ''));
+  if (elapsed < 0) {
+    setText('pSub', `Starts at ${fmtClock(startAt)} · in ${fmtCountdown(-elapsed)}`);
+  } else if (now >= endAt) {
+    setText('pSub', 'Arrived');
+  } else {
+    const halted = stops.findIndex((s, i) => i > 0 && i < stops.length - 1 && elapsed >= st[i].arrive && elapsed < st[i].depart);
+    if (halted >= 0) {
+      setText('pSub', `Halted at ${stops[halted].name} · leaves in ${fmtCountdown(st[halted].depart - elapsed)}`);
+    } else {
+      const ni = st.findIndex((s, i) => i > 0 && s.arrive > elapsed);
+      // heading for the destination: nothing to announce; only intermediate stops get a "Next" line
+      setText('pSub', ni === stops.length - 1 ? '' : `Next: ${stops[ni].name} in ${fmtCountdown(st[ni].arrive - elapsed)} · ${fmtClock(startAt + st[ni].arrive)}`);
+    }
+    // only re-centre when the bus nears the screen edge, so the map isn't constantly moving
+    if (following && !map.getBounds().pad(-0.3).contains(ll)) map.panTo(ll);
+  }
+}
+
+load();
+</script>
+</body>
+</html>

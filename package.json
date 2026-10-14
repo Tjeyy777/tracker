@@ -1,0 +1,14 @@
+{
+  "name": "bus-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js"
+  },
+  "dependencies": {
+    "compression": "^1.8.2",
+    "express": "^4.21.2"
+  }
+}

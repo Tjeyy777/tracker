@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Location Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; display: flex; height: 100vh; color: #1c2430; }
+  #panel { width: 320px; padding: 16px; overflow-y: auto; background: #f6f8fb; border-right: 1px solid #d9dfe8; }
+  #map { flex: 1; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; font-weight: 600; margin: 12px 0 4px; }
+  input[type=text], input[type=number] { width: 100%; padding: 8px; border: 1px solid #c3cbd8; border-radius: 6px; font-size: 14px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button { padding: 9px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font-size: 14px; cursor: pointer; }
+  button.secondary { background: #e3e8f0; color: #1c2430; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .modes button { background: #e3e8f0; color: #1c2430; }
+  .modes button.active { background: #2563eb; color: #fff; }
+  #timer { font-size: 36px; font-weight: 700; text-align: center; margin: 16px 0 4px; font-variant-numeric: tabular-nums; }
+  #bar { height: 8px; background: #dde3ec; border-radius: 4px; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: #16a34a; }
+  #info { font-size: 13px; line-height: 1.6; margin-top: 10px; }
+  #status { font-size: 12px; color: #667; margin-top: 8px; min-height: 16px; }
+  .pin { width: 26px; height: 26px; border-radius: 50%; color: #fff; font-weight: 700; text-align: center; line-height: 26px; border: 2px solid #fff; box-shadow: 0 1px 4px #0006; }
+  .car { font-size: 26px; line-height: 26px; text-align: center; filter: drop-shadow(0 1px 2px #0008); }
+  @media (max-width: 700px) { body { flex-direction: column-reverse; } #panel { width: 100%; height: 50%; } }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>📍 Location Tracker</h1>
+
+  <div class="row modes">
+    <button id="modeA" class="active">Set A</button>
+    <button id="modeB">Set B</button>
+  </div>
+  <div style="font-size:12px;color:#667;margin-top:6px">Click the map, or type a place / "lat,lng" and press Enter.</div>
+
+  <label>Point A (start)</label>
+  <input type="text" id="inA" placeholder="e.g. Connaught Place, Delhi">
+  <label>Point B (destination)</label>
+  <input type="text" id="inB" placeholder="e.g. India Gate">
+
+  <label>Time to reach B</label>
+  <div class="row">
+    <input type="number" id="min" min="0" value="1" placeholder="min">
+    <input type="number" id="sec" min="0" max="59" value="0" placeholder="sec">
+  </div>
+
+  <div class="row" style="margin-top:14px">
+    <button id="start">Start</button>
+    <button id="pause" class="secondary" disabled>Pause</button>
+    <button id="reset" class="secondary">Reset</button>
+  </div>
+
+  <div id="timer">00:00</div>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="info"></div>
+  <div id="status"></div>
+</div>
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const map = L.map('map').setView([28.6139, 77.2090], 12);
+let tileErrors = 0;
+const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const layers = {
+  'Esri Streets': L.tileLayer(esri + 'World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri' }),
+  'Esri Satellite': L.tileLayer(esri + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri' }),
+  'CARTO': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd', attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }),
+  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' })
+};
+Object.values(layers).forEach(l => l.on('tileerror', e => {
+  if (++tileErrors === 3) $('status').textContent = 'MAP TILES FAILED to load from: ' + new URL(e.tile.src).host + ' (check network / ad-blocker / VPN)';
+}));
+layers['Esri Streets'].addTo(map);
+L.control.layers(layers).addTo(map);
+
+const pinIcon = (txt, color) => L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+  html: `<div class="pin" style="background:${color}">${txt}</div>` });
+const carIcon = L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 13], html: '<div class="car">🚗</div>' });
+
+let pts = { A: null, B: null };
+let markers = { A: null, B: null };
+let mode = 'A';
+let path = [];          // [[lat,lng],...]
+let cum = [];           // cumulative metres along path
+let total = 0;
+let routeLine = null, doneLine = null, mover = null;
+let durationMs = 0, elapsed = 0, lastTs = 0, raf = null, running = false;
+
+function setMode(m) {
+  mode = m;
+  $('modeA').classList.toggle('active', m === 'A');
+  $('modeB').classList.toggle('active', m === 'B');
+}
+$('modeA').onclick = () => setMode('A');
+$('modeB').onclick = () => setMode('B');
+
+function status(msg) { $('status').textContent = msg || ''; }
+function fmt(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+}
+function km(m) { return (m / 1000).toFixed(2) + ' km'; }
+
+async function setPoint(which, latlng, label) {
+  pts[which] = latlng;
+  if (markers[which]) markers[which].setLatLng(latlng);
+  else markers[which] = L.marker(latlng, { icon: pinIcon(which, which === 'A' ? '#16a34a' : '#dc2626') }).addTo(map);
+  $('in' + which).value = label || `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
+  if (which === 'A') setMode('B');
+  await buildRoute();
+}
+
+map.on('click', e => setPoint(mode, e.latlng));
+
+async function geocode(which) {
+  const q = $('in' + which).value.trim();
+  if (!q) return;
+  const m = q.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
+  if (m) { const ll = L.latLng(+m[1], +m[3]); map.panTo(ll); return setPoint(which, ll); }
+  status('Searching…');
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q));
+    const t = await r.text();
+    let j; try { j = JSON.parse(t); } catch { return status('Search replied: ' + t.slice(0, 120)); }
+    if (!j.length) return status('Place not found.');
+    const ll = L.latLng(+j[0].lat, +j[0].lon);
+    map.panTo(ll);
+    status('');
+    await setPoint(which, ll, q);
+  } catch { status('Search failed. Click the map instead.'); }
+}
+$('inA').addEventListener('keydown', e => e.key === 'Enter' && geocode('A'));
+$('inB').addEventListener('keydown', e => e.key === 'Enter' && geocode('B'));
+
+function computeCum() {
+  cum = [0];
+  for (let i = 1; i < path.length; i++)
+    cum.push(cum[i - 1] + map.distance(path[i - 1], path[i]));
+  total = cum[cum.length - 1];
+}
+
+async function buildRoute() {
+  resetRun();
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (!pts.A || !pts.B) return;
+  status('Finding route…');
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${pts.A.lng},${pts.A.lat};${pts.B.lng},${pts.B.lat}?overview=full&geometries=geojson`;
+    const resp = await fetch(url);
+    const txt = await resp.text();
+    let j; try { j = JSON.parse(txt); } catch { throw new Error('OSRM replied: ' + txt.slice(0, 120)); }
+    if (j.code !== 'Ok') throw new Error('OSRM replied: ' + (j.message || j.code));
+    path = j.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+    status('Route found.');
+  } catch (err) {
+    path = [[pts.A.lat, pts.A.lng], [pts.B.lat, pts.B.lng]];
+    status('Routing failed (' + err.message + ') — using straight line.');
+  }
+  computeCum();
+  routeLine = L.polyline(path, { color: '#2563eb', weight: 5, opacity: .6 }).addTo(map);
+  map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
+  placeMover(0);
+  render();
+}
+
+function posAt(frac) {
+  const d = frac * total;
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < d) i++;
+  const seg = cum[i] - cum[i - 1] || 1;
+  const t = (d - cum[i - 1]) / seg;
+  const a = path[i - 1], b = path[i];
+  return { ll: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], idx: i };
+}
+
+function placeMover(frac) {
+  if (!path.length) return;
+  const { ll, idx } = posAt(frac);
+  if (!mover) mover = L.marker(ll, { icon: carIcon, zIndexOffset: 1000 }).addTo(map);
+  else mover.setLatLng(ll);
+  if (doneLine) map.removeLayer(doneLine);
+  doneLine = L.polyline([...path.slice(0, idx), ll], { color: '#16a34a', weight: 6 }).addTo(map);
+  return ll;
+}
+
+function render() {
+  const total_ms = durationMs || readDuration();
+  const frac = total_ms ? Math.min(1, elapsed / total_ms) : 0;
+  $('timer').textContent = fmt(total_ms - elapsed);
+  $('fill').style.width = (frac * 100) + '%';
+  if (!path.length) { $('info').innerHTML = ''; return; }
+  const ll = posAt(frac).ll;
+  const eta = new Date(Date.now() + (total_ms - elapsed));
+  $('info').innerHTML =
+    `Position: ${ll[0].toFixed(5)}, ${ll[1].toFixed(5)}<br>` +
+    `Distance left: ${km(total * (1 - frac))} of ${km(total)}<br>` +
+    `Progress: ${(frac * 100).toFixed(0)}%<br>` +
+    `ETA: ${running || elapsed ? eta.toLocaleTimeString() : '—'}`;
+}
+
+function readDuration() {
+  return ((+$('min').value || 0) * 60 + (+$('sec').value || 0)) * 1000;
+}
+
+function tick(ts) {
+  if (!running) return;
+  elapsed += ts - lastTs;
+  lastTs = ts;
+  if (elapsed >= durationMs) {
+    elapsed = durationMs;
+    placeMover(1); render();
+    running = false;
+    $('timer').textContent = 'Arrived 🎉';
+    $('start').disabled = false; $('pause').disabled = true;
+    return;
+  }
+  const frac = elapsed / durationMs;
+  const ll = placeMover(frac);
+  render();
+  raf = requestAnimationFrame(tick);
+}
+
+$('start').onclick = () => {
+  if (!path.length) return status('Set both A and B first.');
+  if (!elapsed) {
+    durationMs = readDuration();
+    if (durationMs <= 0) return status('Enter a time greater than 0.');
+  }
+  running = true;
+  lastTs = performance.now();
+  $('start').disabled = true; $('pause').disabled = false;
+  raf = requestAnimationFrame(tick);
+};
+$('pause').onclick = () => {
+  running = false;
+  $('start').disabled = false; $('start').textContent = 'Resume'; $('pause').disabled = true;
+};
+
+function resetRun() {
+  running = false;
+  if (raf) cancelAnimationFrame(raf);
+  elapsed = 0; durationMs = 0;
+  $('start').disabled = false; $('start').textContent = 'Start'; $('pause').disabled = true;
+  if (path.length) placeMover(0);
+  render();
+}
+$('reset').onclick = resetRun;
+['min', 'sec'].forEach(id => $(id).addEventListener('input', () => { if (!running && !elapsed) render(); }));
+render();
+</script>
+</body>
+</html>

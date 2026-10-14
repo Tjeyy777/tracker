@@ -1,0 +1,26 @@
+{
+  "route": "Bengaluru → Vytilla (Ernakulam)",
+  "corridor": "NH 44 Bengaluru–Hosur–Krishnagiri–Salem, then NH 544 Salem–Erode–Coimbatore–Walayar–Palakkad–Thrissur–Angamaly–Aluva–Edappally–Vytilla",
+  "notes": [
+    "Stop ORDER and towns come from KSRTC/aggregator timetables (Hosur, Salem, Coimbatore, Palakkad, Thrissur, Angamaly, Vytilla are listed by those sources). Krishnagiri, Erode, Walayar, Chalakudy, Aluva, Edappally are on the same highway but are not named in the timetables I found - treat as 'on the way', optional.",
+    "Coordinates are from OpenStreetMap (Nominatim) for the named bus stand/junction. Check them on the map before going live.",
+    "haltMinSuggested is MY suggestion for a realistic trip, not official data.",
+    "Published distance for the road is ~545-560 km; timetables quote ~12.5 h door to door."
+  ],
+  "stops": [
+    { "name": "Bengaluru Satellite Bus Station", "lat": 12.9534245, "lng": 77.5436425, "confidence": "high (Kerala buses board here)", "haltMinSuggested": 0 },
+    { "name": "Hosur", "lat": 12.7351223, "lng": 77.8274146, "confidence": "high (in timetables)", "haltMinSuggested": 2 },
+    { "name": "Krishnagiri", "lat": 12.5331946, "lng": 78.2070137, "confidence": "medium (on NH 44)", "haltMinSuggested": 2 },
+    { "name": "Salem", "lat": 11.6696127, "lng": 78.1401559, "confidence": "high (in timetables)", "haltMinSuggested": 15 },
+    { "name": "Erode", "lat": 11.3468483, "lng": 77.7200010, "confidence": "medium (on NH 544)", "haltMinSuggested": 3 },
+    { "name": "Coimbatore", "lat": 11.0140924, "lng": 76.9669404, "confidence": "high for town; timetables say 'bypass', so this city bus stand may be skipped", "haltMinSuggested": 10 },
+    { "name": "Walayar", "lat": 10.8434494, "lng": 76.8391046, "confidence": "medium (state border check post)", "haltMinSuggested": 0 },
+    { "name": "Palakkad", "lat": 10.7738598, "lng": 76.6626244, "confidence": "high (in timetables)", "haltMinSuggested": 10 },
+    { "name": "Thrissur", "lat": 10.5179809, "lng": 76.2102159, "confidence": "high (in timetables)", "haltMinSuggested": 5 },
+    { "name": "Chalakudy", "lat": 10.3014965, "lng": 76.3329483, "confidence": "medium (on NH 544)", "haltMinSuggested": 2 },
+    { "name": "Angamaly", "lat": 10.1958543, "lng": 76.3865464, "confidence": "high (in timetables)", "haltMinSuggested": 2 },
+    { "name": "Aluva", "lat": 10.1081797, "lng": 76.3506054, "confidence": "medium (on NH 544)", "haltMinSuggested": 2 },
+    { "name": "Edappally", "lat": 10.0249690, "lng": 76.3080204, "confidence": "medium (on NH 544)", "haltMinSuggested": 2 },
+    { "name": "Vytilla", "lat": 9.9683231, "lng": 76.3180869, "confidence": "high (in timetables)", "haltMinSuggested": 0 }
+  ]
+}
